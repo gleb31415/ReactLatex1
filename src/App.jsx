@@ -2,6 +2,57 @@ import { useRef, useState, useEffect } from 'react';
 import './App.css';
 import JSZip from 'jszip';
 
+// Shared CSS for both preview and full-page rendering
+const SHARED_STYLES = `
+  @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Comic+Neue:wght@700&family=Indie+Flower&family=Quicksand:wght@400;600&family=Baloo+2:wght@400;700&family=Nunito:wght@400;700&family=Inter:wght@400;700&display=swap');
+  body, #preview {
+    background: var(--bgColor, #fff);
+    font-family: var(--docFont, "Latin Modern Roman", "Computer Modern", STIX, Times, serif);
+    font-size: var(--docFontSize, 18px);
+    line-height: 1.7;
+    color: var(--textColor, #222);
+  }
+  #preview * { text-align: left; }
+  #preview .center, #preview .center * { text-align: center !important; }
+  #preview .center > *, #preview .center img { display: block; margin-left: auto; margin-right: auto; }
+  #preview table { width:100%; border-collapse:collapse; margin:1em 0; background: #fff; border-radius: 12px; overflow: auto; box-shadow: 0 2px 8px #0001;}
+  #preview th,#preview td { border:1.5px solid #999; padding:0.5em; text-align:center; font-size:inherit;}
+  #preview caption { caption-side:top; font-weight:bold; margin-bottom:.5em; font-size:1.1em; color:var(--textColor, #222); background:transparent;}
+  #preview .table-scroll { overflow-x:auto; }
+  #preview h1,h2,h3 { margin:1em 0 .5em; }
+  #preview ul, #preview dl { margin:.5em 0  .5em 1.5em }
+  #preview p { margin:.5em 0 }
+  #preview pre { background:#f5f5f5; padding:1em; overflow:auto }
+  #preview blockquote { border-left:4px solid #ccc; padding-left:1em; margin:1em 0 }
+  #preview .proof { border:1px solid #ccc; padding:1em; margin:1em 0 }
+  #preview .abstract { font-style:italic; margin:1em 0; }
+  #preview .bibliography { margin:1em 0 }
+  #preview .bibliography h2 { margin-bottom:.5em }
+  #preview .bibliography ul { list-style-type:none; padding-left:0 }
+  #preview .bibliography li { margin-bottom:.5em }
+  #preview header.title { margin:1em 0; }
+  #preview header.title h1 { margin:0; font-size:1.8em; }
+  #preview header.title .author, #preview header.title .date { margin:0.2em 0; color:#555; }
+  #preview nav.toc ul { list-style:none; padding:0; }
+  #preview nav.toc li { margin:0.2em 0; }
+  #preview .toc-level-2 { margin-left:1em; }
+  #preview .toc-level-3 { margin-left:2em; }
+  #preview .page-break { page-break-after:always; height:0; }
+  #preview .definition { border: 1px solid #8c8; background: #f8fff8; padding: 1em; margin: 1em 0; }
+  #preview .theorem { border: 1px solid #88c; background: #f8f8ff; padding: 1em; margin: 1em 0; }
+  #preview figure.listing { margin: 1em 0; }
+  #preview figure.listing figcaption { font-style: italic; margin-bottom: .5em; }
+  #preview figure.listing pre { background: #f5f5f5; padding: 1em; overflow: auto; }
+  .textimage { display: flex; gap: 2em; align-items: flex-start; margin: 2em 0; }
+  .textimage-left { flex: 1; min-width: 0; }
+  .textimage-right { flex: 0 0 auto; max-width: 400px; margin-left: 1em; }
+  .textimage-right img { width: 80%; max-width: 100%; height: auto; border-radius: 8px; display: block; }
+  #preview .sidebyside { display: flex; gap: 2em; align-items: flex-start; margin: 2em 0; }
+  #preview .sidebyside-left { flex: 0 0 auto; max-width: 40%; display: flex; flex-direction: column; align-items: flex-start; }
+  #preview .sidebyside-left img { max-width: 100%; height: auto; border-radius: 8px; }
+  #preview .sidebyside-right { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+`;
+
 // Dynamically load MathJax
 const loadMathJax = () => {
   if (!window.MathJax) {
@@ -121,6 +172,8 @@ function App() {
   const [docFontSize, setDocFontSize] = useState(16); // Document font size
   const [dividerX, setDividerX] = useState(0.5); // 0.5 means 50% split
   const dragging = useRef(false);
+  const [renderKey, setRenderKey] = useState(0); // Add a key to force re-render
+  const previewRef = useRef(null);
 
   // Font options
   const fontOptions = [
@@ -167,6 +220,20 @@ function App() {
       window.MathJax.typesetPromise && window.MathJax.typesetPromise();
     }
   }, [html]);
+
+  // Re-run MathJax typeset on render
+  useEffect(() => {
+    if (window.MathJax && previewRef.current) {
+      // MathJax v3
+      if (window.MathJax.typesetPromise) {
+        window.MathJax.typesetPromise([previewRef.current]);
+      }
+      // MathJax v2
+      else if (window.MathJax.Hub && window.MathJax.Hub.Queue) {
+        window.MathJax.Hub.Queue(["Typeset", window.MathJax.Hub, previewRef.current]);
+      }
+    }
+  }, [renderKey]);
 
   // --- LaTeX to HTML conversion logic (adapted from your script) ---
   function extractBody(tex) {
@@ -592,6 +659,614 @@ function App() {
       .replace(/\\\[\s*([\s\S]*?)\s*\\\]/g,'<div class="math display">\\[$1\\]</div>')
       .replace(/\$([^$\n]+)\$/g,'<span class="math inline">\\($1\\)</span>');
 
+    // --- Add \href support (after inline formatting, before block-level) ---
+    body = body.replace(/\\href\{([^}]+)\}\{([\s\S]+?)\}/g, (m, url, inner) => {
+      // If the inner is a <span style="color:...">, preserve it
+      if (/^<span style="color:[^>]+>/.test(inner)) {
+        return `<a href="${url}" target="_blank" style="text-decoration:underline;">${inner}</a>`;
+      } else {
+        return `<a href="${url}" target="_blank">${inner}</a>`;
+      }
+    });
+
+    // --- Support for \begin{center} ... \end{center} (after inline, before paragraph split) ---
+    body = body.replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, (m, content) => {
+      return `<div class="center">${convertTexToHtml(content.trim())}</div>`;
+    });
+
+    // --- Handle centering EARLY, before other conversions ---
+    // Mark centering sections with a special placeholder
+    body = body.replace(/\\centering\s+([\s\S]*?)(?=\\section|\\subsection|\\subsubsection|\\end\{document\}|$)/g, 
+      (match, content) => {
+        // Remove any trailing whitespace/newlines and mark for centering
+        return `__CENTER_START__${content.trim()}__CENTER_END__`;
+      });
+
+    // --- Horizontal rule support ---
+    body = body.replace(/\\hrule|\\sectionbreak/g, '<hr />');
+
+    // --- Side-by-side image and text ---
+    body = body.replace(/\\begin\{sidebyside\}([\s\S]*?)\\sidebytext([\s\S]*?)\\end\{sidebyside\}/g,
+      (_, left, right) => {
+        // Try to render left as image(s), right as text
+        return `<div class="sidebyside"><div class="sidebyside-left">${convertTexToHtml(left.trim())}</div><div class="sidebyside-right">${convertTexToHtml(right.trim())}</div></div>`;
+      });
+
+    // --- Text with image on right (scaled to 0.8) ---
+    body = body.replace(/\\begin\{textimage\}([\s\S]*?)\\imageright([\s\S]*?)\\end\{textimage\}/g,
+      (_, textContent, imageContent) => {
+        // Process the text content but keep it as raw text without paragraph wrapping
+        const processedText = textContent.trim()
+          .replace(/\\textbf\{([\s\S]+?)\}/g,'<strong>$1</strong>')
+          .replace(/\\textit\{([\s\S]+?)\}/g,'<em>$1</em>')
+          .replace(/\\underline\{([\s\S]+?)\}/g,'<u>$1</u>')
+          .replace(/\\texttt\{([\s\S]+?)\}/g,'<code>$1</code>')
+          .replace(/\$([^$\n]+)\$/g,'<span class="math inline">\\($1\\)</span>')
+          .split(/\n\s*\n/)
+          .map(para => para.trim())
+          .filter(para => para)
+          .map(para => `<p>${para.replace(/\n/g, ' ')}</p>`)
+          .join('');
+        
+        // Process the image content and add 0.8 scaling
+        const processedImage = imageContent.replace(/\\includegraphics(?:\s*\[([^\]]*)\])?\s*\{\s*([^}]+?)\s*\}/g,
+          (match, opts, path) => {
+            // Override width to 0.8 linewidth for this layout
+            const cleanPath = path.trim();
+            const src = imageMap && imageMap.has(cleanPath) ? imageMap.get(cleanPath) : cleanPath;
+            return `<img src="${src}" alt="" style="width:80%; max-width:400px;">`;
+          }
+        );
+        return `<div class="textimage"><div class="textimage-left">${processedText}</div><div class="textimage-right">${processedImage.trim()}</div></div>`;
+      });
+
+    // --- Standalone \includegraphics handler (outside of figures) ---
+    body = body.replace(/\\includegraphics(?:\s*\[([^\]]*)\])?\s*\{([\s\S]*?)\n?\s*\}/g,
+      (match, opts, path) => {
+        let style = '';
+        if (opts) {
+          const wMatch = opts.match(/width=([\d.]+)\\linewidth/);
+          if (wMatch) style += `width:${parseFloat(wMatch[1])*100}%`; 
+          const sMatch = opts.match(/scale=([\d.]+)/);
+          if (sMatch) style += (style ? ';' : '') + `transform:scale(${parseFloat(sMatch[1])});transform-origin:left top;display:inline-block;`;
+        }
+        style = style ? ` style=\"${style}\"` : '';
+        const cleanPath = path.replace(/\s+/g, '').trim();
+        // Try to find the image by name, or by name without extension if not found
+        let src = imageMapArg && imageMapArg.has(cleanPath) ? imageMapArg.get(cleanPath) : null;
+        if (!src) {
+          // Try to match ignoring extension
+          const base = cleanPath.replace(/\.[a-zA-Z0-9]+$/, '');
+          for (const [key, value] of imageMapArg.entries()) {
+            if (key.replace(/\.[a-zA-Z0-9]+$/, '') === base) {
+              src = value;
+              break;
+            }
+          }
+        }
+        src = src || cleanPath;
+        return `<img src=\"${src}\" alt=\"\"${style}>`;
+      }
+    );
+    // --- More robust \includegraphics: tolerate newlines and spaces before closing brace ---
+    body = body.replace(/\\includegraphics(?:\s*\[([^\]]*)\])?\s*\{([\s\S]*?)\n?\s*\}/g,
+      (match, opts, path) => {
+        const wMatch = opts && opts.match(/width=([\d.]+)\\linewidth/);
+        const style = wMatch ? ` style="width:${parseFloat(wMatch[1])*100}%"` : '';
+        const cleanPath = path.replace(/\s+/g, '').trim();
+        // Try to find the image by name, or by name without extension if not found
+        let src = imageMapArg && imageMapArg.has(cleanPath) ? imageMapArg.get(cleanPath) : null;
+        if (!src) {
+          const base = cleanPath.replace(/\.[a-zA-Z0-9]+$/, '');
+          for (const [key, value] of imageMapArg.entries()) {
+            if (key.replace(/\.[a-zA-Z0-9]+$/, '') === base) {
+              src = value;
+              break;
+            }
+          }
+        }
+        src = src || cleanPath;
+        return `<img src="${src}" alt=""${style}>`;
+      }
+    );
+
+    // --- Paragraph separation ---
+    // Replace \par or double newlines with paragraph breaks
+    body = body.replace(/\\par/g, '\n\n');
+
+    // --- Handle line breaks ---
+    // Convert LaTeX line breaks to HTML line breaks (but not in tables)
+    body = body.replace(/\\\\(?!\s*&)/g, '<br>');
+    body = body.replace(/\\newline/g, '<br>');
+    body = body.replace(/\\linebreak/g, '<br>');
+
+    // --- Fix table rules ---
+    body = body.replace(/\\toprule|\\midrule|\\bottomrule/g, '');
+
+    // --- Fix bibliography: \emph and \url ---
+    body = body.replace(/\\emph\{([^}]+)\}/g, '<em>$1</em>');
+    body = body.replace(/\\url\{([^}]+)\}/g, '<a href="$1" target="_blank">$1</a>');
+
+    // --- Fix table header row (first row in tabular) ---
+    body = body.replace(/\\begin\{tabular\}\{[^}]+\}([\s\S]*?)\\end\{tabular\}/g,
+      (_, tbl) => {
+        const rows = tbl.split(/\\\\/).map(r => r.trim()).filter(r => r);
+        let t = '<table>';
+        if (rows.length > 0) {
+          const header = rows[0].split('&').map(c => '<th>' + c.trim() + '</th>').join('');
+          t += '<tr>' + header + '</tr>';
+          rows.slice(1).forEach(r => {
+            t += '<tr>' + r.split('&').map(c => '<td>' + c.trim() + '</td>').join('') + '</tr>';
+          });
+        }
+        t += '</table>';
+        return t;
+      });
+
+    // --- Improved tabularx with caption and scroll ---
+    body = body.replace(/\\caption\{([^}]+)\}\s*\\begin\{tabularx\}([^]*?)\\end\{tabularx\}/g,
+      (match, caption, tableContent) => {
+        // Extract column format and rows
+        const colMatch = tableContent.match(/^\{([^}]+)\}([\s\S]*)/);
+        let colFormat = '', rows = tableContent;
+        if (colMatch) {
+          colFormat = colMatch[1];
+          rows = colMatch[2];
+        }
+        // Split rows by \\ and keep \hline as markers
+        const rowArr = rows.split(/\\\\/).map(r => r.trim()).filter(r => r.length > 0);
+        let t = `<div class="table-scroll"><table><caption>${caption}</caption>`;
+        let headerDone = false;
+        rowArr.forEach((r, i) => {
+          if (/^\\hline/.test(r) || r === '\\hline' || r === 'hline') return;
+          if (!headerDone && (rowArr[i+1] && /hline/.test(rowArr[i+1]))) {
+            // This is the header row
+            t += '<tr>' + r.split('&').map(c => `<th>${c.trim()}</th>`).join('') + '</tr>';
+            headerDone = true;
+          } else {
+            t += '<tr>' + r.split('&').map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+          }
+        });
+        t += '</table></div>';
+        return t;
+      });
+
+    // --- Improved tabularx without caption ---
+    body = body.replace(/\\begin\{tabularx\}([^]*?)\\end\{tabularx\}/g,
+      (match, tableContent) => {
+        const colMatch = tableContent.match(/^\{([^}]+)\}([\s\S]*)/);
+        let colFormat = '', rows = tableContent;
+        if (colMatch) {
+          colFormat = colMatch[1];
+          rows = colMatch[2];
+        }
+        const rowArr = rows.split(/\\\\/).map(r => r.trim()).filter(r => r.length > 0);
+        let t = `<div class="table-scroll"><table>`;
+        let headerDone = false;
+        rowArr.forEach((r, i) => {
+          if (/^\\hline/.test(r) || r === '\\hline' || r === 'hline') return;
+          if (!headerDone && (rowArr[i+1] && /hline/.test(rowArr[i+1]))) {
+            t += '<tr>' + r.split('&').map(c => `<th>${c.trim()}</th>`).join('') + '</tr>';
+            headerDone = true;
+          } else {
+            t += '<tr>' + r.split('&').map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+          }
+        });
+        t += '</table></div>';
+        return t;
+      });
+
+    // --- Improved centering logic ---
+    // Replace \centering followed by block (image, table, figure, tabular, tabularx, includegraphics, etc.)
+    body = body.replace(/\\centering\s*((?:<img [^>]+>|<table[\s\S]*?<\/table>|<figure[\s\S]*?<\/figure>|<div class="table-scroll">[\s\S]*?<\/div>|<pre[\s\S]*?<\/pre>|<blockquote[\s\S]*?<\/blockquote>|<ul[\s\S]*?<\/ul>|<ol[\sS]*?<\/ol>|<dl[\s\S]*?<\/dl>|<section[\sS]*?<\/section>|<h[1-6][^>]*>.*?<\/h[1-6]>|<p[\s\S]*?<\/p>))/,
+      (_, block) => `<div class="center">${block}</div>`
+    );
+    // Remove any remaining standalone \centering
+    body = body.replace(/\\centering\s*/g, '');
+
+    body = body.replace(/\\maketitle/, `\n<header class="title">\n  <h1>${title}</h1>\n  <p class="author">${author}</p>\n  <p class="date">${date}</p>\n</header>\n`);
+    body = body.replace(/\\tableofcontents/, '<nav class="toc"></nav>');
+    body = body.replace(/\\newpage/g, '<div class="page-break"></div>');
+    // --- Figure handling ---
+    body = body.replace(
+      /\\begin\{figure(?:\[[^\]]*\])?\}([\s\S]*?)\\end\{figure\}/g,
+      (_, content) => {
+        const inner = content.replace(/\\centering\s*/g, '');
+        const imgs = [...inner.matchAll(
+          /\\includegraphics(?:\[([^\]]*)\])?\{([\s\S]*?)\n?\s*\}/g
+        )].map(m => {
+          const opts = m[1]||'', path = m[2];
+          let style = '';
+          if (opts) {
+            const wMatch = opts.match(/width=([\d.]+)\\linewidth/);
+            if (wMatch) style += `width:${parseFloat(wMatch[1])*100}%`;
+            const sMatch = opts.match(/scale=([\d.]+)/);
+            if (sMatch) style += (style ? ';' : '') + `transform:scale(${parseFloat(sMatch[1])});transform-origin:left top;display:inline-block;`;
+          }
+          style = style ? ` style=\"${style}\"` : '';
+          const cleanPath = path.replace(/\s+/g, '').trim();
+          // Try to find the image by name, or by name without extension if not found
+          let src = imageMap && imageMap.has(cleanPath) ? imageMap.get(cleanPath) : null;
+          if (!src) {
+            const base = cleanPath.replace(/\.[a-zA-Z0-9]+$/, '');
+            for (const [key, value] of imageMap.entries()) {
+              if (key.replace(/\.[a-zA-Z0-9]+$/, '') === base) {
+                src = value;
+                break;
+              }
+            }
+          }
+          src = src || cleanPath;
+          return `<img src=\"${src}\" alt=\"\"${style}>`;
+        });
+        const capMatch = inner.match(/\\caption\{([\s\S]*?)\}/);
+        const caption = capMatch
+          ? `<figcaption>${capMatch[1]}</figcaption>`
+          : '';
+        return `<figure style=\"display:flex;flex-wrap:wrap;gap:1em;justify-content:center\">\n  ${imgs.join('')}\n  ${caption}\n</figure>`;
+      }
+    );
+    // Table + caption + centering
+    body = body.replace(
+      /\\begin\{table.*?\}([\s\S]*?)\\end\{table\}/g,
+      (_, tbl) => {
+        const centered = /\\centering/.test(tbl);
+        let inner = tbl.replace(/\\centering\s*/g, '');
+        inner = inner.replace(/\\caption\{([\s\S]*?)\}/g, '<caption>$1</caption>');
+        return centered
+          ? `<div style="text-align:center">\n${inner}\n</div>`
+          : inner;
+      }
+    );
+    body = body
+      .replace(/\\&/g,'&').replace(/\\%/g,'%').replace(/\\_/g,'_')
+      .replace(/\\#/g,'#').replace(/\\\{/g,'{').replace(/\\\}/g,'}')
+      .replace(/\\label\{[^}]+\}/g, '')
+      .replace(/\\textbf\{([\s\S]+?)\}/g,'<strong>$1</strong>')
+      .replace(/\\textit\{([\s\S]+?)\}/g,'<em>$1</em>')
+      .replace(/\\underline\{([\s\S]+?)\}/g,'<u>$1</u>')
+      .replace(/\\texttt\{([\s\S]+?)\}/g,'<code>$1</code>')
+      .replace(/\\textsc\{([^}]+)\}/g,'<span style="font-variant:small-caps">$1</span>')
+      .replace(/\\textcolor\{([^}]+)\}\{([\s\S]+?)\}/g,'<span style="color:$1">$2</span>')
+      .replace(/\\colorbox\{([^}]+)\}\{([\s\S]+?)\}/g,'<span style="background-color:$1">$2</span>')
+      .replace(/\\fcolorbox\{([^}]+)\}\{([^}]+)\}\{([\s\S]+?)\}/g,
+               '<span style="border:1px solid $1; background-color:$2">$3</span>')
+      .replace(/\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}/g,
+        (_,c)=>'<section class="abstract">'+c.trim().split(/\n{2,}/).map(p=>'<p>'+p.trim()+'</p>').join('')+'</section>')
+      .replace(/\\begin\{definition\}([\s\S]*?)\\end\{definition\}/g,
+        (_,c)=>`<div class="definition"><strong>Definition.</strong> ${c.trim()}</div>`)
+      .replace(/\\begin\{theorem\}(?:\[(.*?)\])?([\s\S]*?)\\end\{theorem\}/g,
+        (_,name,c)=>`<div class="theorem"><strong>${name?`Theorem (${name}).`:'Theorem.'}</strong> ${c.trim()}</div>`)
+      .replace(/\\section\*?\{([^}]+)\}/g,'<h1>$1</h1>')
+      .replace(/\\subsection\*?\{([^}]+)\}/g,'<h2>$1</h2>')
+      .replace(/\\subsubsection\*?\{([^}]+)\}/g,'<h3>$1</h3>')
+      .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g,
+        (_,t)=>'<ul>'+t.split(/\\item/).slice(1).map(i=>'<li>'+i.trim().replace(/\n/g,' ')+'</li>').join('')+'</ul>')
+      .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g,
+        (_,t)=>'<ol>'+t.split(/\\item/).slice(1).map(i=>'<li>'+i.trim().replace(/\n/g,' ')+'</li>').join('')+'</ol>')
+      .replace(/\\begin\{description\}([\s\S]*?)\\end\{description\}/g,
+        (_,t)=>{let dl='<dl>';t.replace(/\\item\[(.*?)\]([\s\S]*?)(?=\\item\[|$)/g,(_,k,d)=>dl+='<dt>'+k+'</dt><dd>'+d.trim()+'</dd>');return dl+'</dl>'})
+      .replace(/\\begin\{quote\}([\s\S]*?)\\end\{quote\}/g,
+        (_,c)=>'<blockquote>'+c.trim().split(/\n{2,}/).map(p=>'<p>'+p.trim()+'</p>').join('')+'</blockquote>')
+      .replace(/\\begin\{lstlisting\}(?:\[(.*?)\])?\s*([\s\S]*?)\\end\{lstlisting\}/g,
+        (_,o,c)=>{let lang='',cap='';if(o){const mL=o.match(/language=([^,\]]+)/);if(mL)lang=mL[1].toLowerCase();const mC=o.match(/caption=\{([\s\S]*?)\}/);if(mC)cap=mC[1];}const cls= lang?` class="language-${lang}"` : ''; return `<figure class="listing">${cap?`<figcaption>${cap}</figcaption>`:''}<pre><code${cls}>${escapeHTML(c.trim())}</code></pre></figure>`})
+      .replace(/\\begin\{proof\}([\s\S]*?)\\end\{proof\}/g,
+        (_,c)=>'<div class="proof"><strong>Proof.</strong> '+c.trim().replace(/\n/g,' ')+'</div>')
+      .replace(/\\begin\{verbatim\}([\s\S]*?)\\end\{verbatim\}/g,
+        (_,c)=>'<pre><code>'+escapeHTML(c)+'</code></pre>')
+      .replace(/\\begin\{thebibliography\}.*?\}([\s\S]*?)\\end\{thebibliography\}/g,
+        (_,t)=>{let h='<section class="bibliography"><h2>References</h2><ul>';t.replace(/\\bibitem(?:\[[^\]]*\])?\{[^}]*\}([\s\S]*?)(?=\\bibitem|$)/g,(_,e)=>h+='<li>'+e.trim().replace(/\n/g,' ')+'</li>');return h+'</ul></section>'})
+      .replace(/\\begin\{tabularx\}\{[^}]*\}\{[^}]+\}([\s\S]*?)\\end\{tabularx\}/g,
+        (_,tbl)=>{const rows=tbl.replace(/\\hline/g,'').split(/\\\\/).map(r=>r.trim()).filter(r=>r);let t='<table>';rows.forEach(r=>t+='<tr>'+r.split('&').map(c=>'<td>'+c.trim()+'</td>').join('')+'</tr>');return t+'</table>'})
+      .replace(/\\begin\{tabular\}\{[^}]+\}([\s\S]*?)\\end\{tabular\}/g,
+        (_,tbl)=>{const rows=tbl.replace(/\\hline/g,'').split(/\\\\/).map(r=>r.trim()).filter(r=>r);let t='<table>';rows.forEach(r=>t+='<tr>'+r.split('&').map(c=>'<td>'+c.trim()+'</td>').join('')+'</tr>');return t+'</table>'})
+      .replace(/\\\[\s*([\s\S]*?)\s*\\\]/g,'<div class="math display">\\[$1\\]</div>')
+      .replace(/\$([^$\n]+)\$/g,'<span class="math inline">\\($1\\)</span>');
+
+    // --- Add \href support (after inline formatting, before block-level) ---
+    body = body.replace(/\\href\{([^}]+)\}\{([\s\S]+?)\}/g, (m, url, inner) => {
+      // If the inner is a <span style="color:...">, preserve it
+      if (/^<span style="color:[^>]+>/.test(inner)) {
+        return `<a href="${url}" target="_blank" style="text-decoration:underline;">${inner}</a>`;
+      } else {
+        return `<a href="${url}" target="_blank">${inner}</a>`;
+      }
+    });
+
+    // --- Support for \begin{center} ... \end{center} (after inline, before paragraph split) ---
+    body = body.replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, (m, content) => {
+      return `<div class="center">${convertTexToHtml(content.trim())}</div>`;
+    });
+
+    // --- Handle centering EARLY, before other conversions ---
+    // Mark centering sections with a special placeholder
+    body = body.replace(/\\centering\s+([\s\S]*?)(?=\\section|\\subsection|\\subsubsection|\\end\{document\}|$)/g, 
+      (match, content) => {
+        // Remove any trailing whitespace/newlines and mark for centering
+        return `__CENTER_START__${content.trim()}__CENTER_END__`;
+      });
+
+    // --- Horizontal rule support ---
+    body = body.replace(/\\hrule|\\sectionbreak/g, '<hr />');
+
+    // --- Side-by-side image and text ---
+    body = body.replace(/\\begin\{sidebyside\}([\s\S]*?)\\sidebytext([\s\S]*?)\\end\{sidebyside\}/g,
+      (_, left, right) => {
+        // Try to render left as image(s), right as text
+        return `<div class="sidebyside"><div class="sidebyside-left">${convertTexToHtml(left.trim())}</div><div class="sidebyside-right">${convertTexToHtml(right.trim())}</div></div>`;
+      });
+
+    // --- Text with image on right (scaled to 0.8) ---
+    body = body.replace(/\\begin\{textimage\}([\s\S]*?)\\imageright([\s\S]*?)\\end\{textimage\}/g,
+      (_, textContent, imageContent) => {
+        // Process the text content but keep it as raw text without paragraph wrapping
+        const processedText = textContent.trim()
+          .replace(/\\textbf\{([\s\S]+?)\}/g,'<strong>$1</strong>')
+          .replace(/\\textit\{([\s\S]+?)\}/g,'<em>$1</em>')
+          .replace(/\\underline\{([\s\S]+?)\}/g,'<u>$1</u>')
+          .replace(/\\texttt\{([\s\S]+?)\}/g,'<code>$1</code>')
+          .replace(/\$([^$\n]+)\$/g,'<span class="math inline">\\($1\\)</span>')
+          .split(/\n\s*\n/)
+          .map(para => para.trim())
+          .filter(para => para)
+          .map(para => `<p>${para.replace(/\n/g, ' ')}</p>`)
+          .join('');
+        
+        // Process the image content and add 0.8 scaling
+        const processedImage = imageContent.replace(/\\includegraphics(?:\s*\[([^\]]*)\])?\s*\{\s*([^}]+?)\s*\}/g,
+          (match, opts, path) => {
+            // Override width to 0.8 linewidth for this layout
+            const cleanPath = path.trim();
+            const src = imageMap && imageMap.has(cleanPath) ? imageMap.get(cleanPath) : cleanPath;
+            return `<img src="${src}" alt="" style="width:80%; max-width:400px;">`;
+          }
+        );
+        return `<div class="textimage"><div class="textimage-left">${processedText}</div><div class="textimage-right">${processedImage.trim()}</div></div>`;
+      });
+
+    // --- Standalone \includegraphics handler (outside of figures) ---
+    body = body.replace(/\\includegraphics(?:\s*\[([^\]]*)\])?\s*\{([\s\S]*?)\n?\s*\}/g,
+      (match, opts, path) => {
+        let style = '';
+        if (opts) {
+          const wMatch = opts.match(/width=([\d.]+)\\linewidth/);
+          if (wMatch) style += `width:${parseFloat(wMatch[1])*100}%`; 
+          const sMatch = opts.match(/scale=([\d.]+)/);
+          if (sMatch) style += (style ? ';' : '') + `transform:scale(${parseFloat(sMatch[1])});transform-origin:left top;display:inline-block;`;
+        }
+        style = style ? ` style=\"${style}\"` : '';
+        const cleanPath = path.replace(/\s+/g, '').trim();
+        // Try to find the image by name, or by name without extension if not found
+        let src = imageMapArg && imageMapArg.has(cleanPath) ? imageMapArg.get(cleanPath) : null;
+        if (!src) {
+          // Try to match ignoring extension
+          const base = cleanPath.replace(/\.[a-zA-Z0-9]+$/, '');
+          for (const [key, value] of imageMapArg.entries()) {
+            if (key.replace(/\.[a-zA-Z0-9]+$/, '') === base) {
+              src = value;
+              break;
+            }
+          }
+        }
+        src = src || cleanPath;
+        return `<img src=\"${src}\" alt=\"\"${style}>`;
+      }
+    );
+    // --- More robust \includegraphics: tolerate newlines and spaces before closing brace ---
+    body = body.replace(/\\includegraphics(?:\s*\[([^\]]*)\])?\s*\{([\s\S]*?)\n?\s*\}/g,
+      (match, opts, path) => {
+        const wMatch = opts && opts.match(/width=([\d.]+)\\linewidth/);
+        const style = wMatch ? ` style="width:${parseFloat(wMatch[1])*100}%"` : '';
+        const cleanPath = path.replace(/\s+/g, '').trim();
+        // Try to find the image by name, or by name without extension if not found
+        let src = imageMapArg && imageMapArg.has(cleanPath) ? imageMapArg.get(cleanPath) : null;
+        if (!src) {
+          const base = cleanPath.replace(/\.[a-zA-Z0-9]+$/, '');
+          for (const [key, value] of imageMapArg.entries()) {
+            if (key.replace(/\.[a-zA-Z0-9]+$/, '') === base) {
+              src = value;
+              break;
+            }
+          }
+        }
+        src = src || cleanPath;
+        return `<img src="${src}" alt=""${style}>`;
+      }
+    );
+
+    // --- Paragraph separation ---
+    // Replace \par or double newlines with paragraph breaks
+    body = body.replace(/\\par/g, '\n\n');
+
+    // --- Handle line breaks ---
+    // Convert LaTeX line breaks to HTML line breaks (but not in tables)
+    body = body.replace(/\\\\(?!\s*&)/g, '<br>');
+    body = body.replace(/\\newline/g, '<br>');
+    body = body.replace(/\\linebreak/g, '<br>');
+
+    // --- Fix table rules ---
+    body = body.replace(/\\toprule|\\midrule|\\bottomrule/g, '');
+
+    // --- Fix bibliography: \emph and \url ---
+    body = body.replace(/\\emph\{([^}]+)\}/g, '<em>$1</em>');
+    body = body.replace(/\\url\{([^}]+)\}/g, '<a href="$1" target="_blank">$1</a>');
+
+    // --- Fix table header row (first row in tabular) ---
+    body = body.replace(/\\begin\{tabular\}\{[^}]+\}([\s\S]*?)\\end\{tabular\}/g,
+      (_, tbl) => {
+        const rows = tbl.split(/\\\\/).map(r => r.trim()).filter(r => r);
+        let t = '<table>';
+        if (rows.length > 0) {
+          const header = rows[0].split('&').map(c => '<th>' + c.trim() + '</th>').join('');
+          t += '<tr>' + header + '</tr>';
+          rows.slice(1).forEach(r => {
+            t += '<tr>' + r.split('&').map(c => '<td>' + c.trim() + '</td>').join('') + '</tr>';
+          });
+        }
+        t += '</table>';
+        return t;
+      });
+
+    // --- Improved tabularx with caption and scroll ---
+    body = body.replace(/\\caption\{([^}]+)\}\s*\\begin\{tabularx\}([^]*?)\\end\{tabularx\}/g,
+      (match, caption, tableContent) => {
+        // Extract column format and rows
+        const colMatch = tableContent.match(/^\{([^}]+)\}([\s\S]*)/);
+        let colFormat = '', rows = tableContent;
+        if (colMatch) {
+          colFormat = colMatch[1];
+          rows = colMatch[2];
+        }
+        // Split rows by \\ and keep \hline as markers
+        const rowArr = rows.split(/\\\\/).map(r => r.trim()).filter(r => r.length > 0);
+        let t = `<div class="table-scroll"><table><caption>${caption}</caption>`;
+        let headerDone = false;
+        rowArr.forEach((r, i) => {
+          if (/^\\hline/.test(r) || r === '\\hline' || r === 'hline') return;
+          if (!headerDone && (rowArr[i+1] && /hline/.test(rowArr[i+1]))) {
+            // This is the header row
+            t += '<tr>' + r.split('&').map(c => `<th>${c.trim()}</th>`).join('') + '</tr>';
+            headerDone = true;
+          } else {
+            t += '<tr>' + r.split('&').map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+          }
+        });
+        t += '</table></div>';
+        return t;
+      });
+
+    // --- Improved tabularx without caption ---
+    body = body.replace(/\\begin\{tabularx\}([^]*?)\\end\{tabularx\}/g,
+      (match, tableContent) => {
+        const colMatch = tableContent.match(/^\{([^}]+)\}([\s\S]*)/);
+        let colFormat = '', rows = tableContent;
+        if (colMatch) {
+          colFormat = colMatch[1];
+          rows = colMatch[2];
+        }
+        const rowArr = rows.split(/\\\\/).map(r => r.trim()).filter(r => r.length > 0);
+        let t = `<div class="table-scroll"><table>`;
+        let headerDone = false;
+        rowArr.forEach((r, i) => {
+          if (/^\\hline/.test(r) || r === '\\hline' || r === 'hline') return;
+          if (!headerDone && (rowArr[i+1] && /hline/.test(rowArr[i+1]))) {
+            t += '<tr>' + r.split('&').map(c => `<th>${c.trim()}</th>`).join('') + '</tr>';
+            headerDone = true;
+          } else {
+            t += '<tr>' + r.split('&').map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+          }
+        });
+        t += '</table></div>';
+        return t;
+      });
+
+    // --- Improved centering logic ---
+    // Replace \centering followed by block (image, table, figure, tabular, tabularx, includegraphics, etc.)
+    body = body.replace(/\\centering\s*((?:<img [^>]+>|<table[\s\S]*?<\/table>|<figure[\s\S]*?<\/figure>|<div class="table-scroll">[\s\S]*?<\/div>|<pre[\s\S]*?<\/pre>|<blockquote[\s\S]*?<\/blockquote>|<ul[\s\S]*?<\/ul>|<ol[\sS]*?<\/ol>|<dl[\s\S]*?<\/dl>|<section[\sS]*?<\/section>|<h[1-6][^>]*>.*?<\/h[1-6]>|<p[\s\S]*?<\/p>))/,
+      (_, block) => `<div class="center">${block}</div>`
+    );
+    // Remove any remaining standalone \centering
+    body = body.replace(/\\centering\s*/g, '');
+
+    body = body.replace(/\\maketitle/, `\n<header class="title">\n  <h1>${title}</h1>\n  <p class="author">${author}</p>\n  <p class="date">${date}</p>\n</header>\n`);
+    body = body.replace(/\\tableofcontents/, '<nav class="toc"></nav>');
+    body = body.replace(/\\newpage/g, '<div class="page-break"></div>');
+    // --- Figure handling ---
+    body = body.replace(
+      /\\begin\{figure(?:\[[^\]]*\])?\}([\s\S]*?)\\end\{figure\}/g,
+      (_, content) => {
+        const inner = content.replace(/\\centering\s*/g, '');
+        const imgs = [...inner.matchAll(
+          /\\includegraphics(?:\[([^\]]*)\])?\{([\s\S]*?)\n?\s*\}/g
+        )].map(m => {
+          const opts = m[1]||'', path = m[2];
+          let style = '';
+          if (opts) {
+            const wMatch = opts.match(/width=([\d.]+)\\linewidth/);
+            if (wMatch) style += `width:${parseFloat(wMatch[1])*100}%`;
+            const sMatch = opts.match(/scale=([\d.]+)/);
+            if (sMatch) style += (style ? ';' : '') + `transform:scale(${parseFloat(sMatch[1])});transform-origin:left top;display:inline-block;`;
+          }
+          style = style ? ` style=\"${style}\"` : '';
+          const cleanPath = path.replace(/\s+/g, '').trim();
+          // Try to find the image by name, or by name without extension if not found
+          let src = imageMap && imageMap.has(cleanPath) ? imageMap.get(cleanPath) : null;
+          if (!src) {
+            const base = cleanPath.replace(/\.[a-zA-Z0-9]+$/, '');
+            for (const [key, value] of imageMap.entries()) {
+              if (key.replace(/\.[a-zA-Z0-9]+$/, '') === base) {
+                src = value;
+                break;
+              }
+            }
+          }
+          src = src || cleanPath;
+          return `<img src=\"${src}\" alt=\"\"${style}>`;
+        });
+        const capMatch = inner.match(/\\caption\{([\s\S]*?)\}/);
+        const caption = capMatch
+          ? `<figcaption>${capMatch[1]}</figcaption>`
+          : '';
+        return `<figure style=\"display:flex;flex-wrap:wrap;gap:1em;justify-content:center\">\n  ${imgs.join('')}\n  ${caption}\n</figure>`;
+      }
+    );
+    // Table + caption + centering
+    body = body.replace(
+      /\\begin\{table.*?\}([\s\S]*?)\\end\{table\}/g,
+      (_, tbl) => {
+        const centered = /\\centering/.test(tbl);
+        let inner = tbl.replace(/\\centering\s*/g, '');
+        inner = inner.replace(/\\caption\{([\s\S]*?)\}/g, '<caption>$1</caption>');
+        return centered
+          ? `<div style="text-align:center">\n${inner}\n</div>`
+          : inner;
+      }
+    );
+    body = body
+      .replace(/\\&/g,'&').replace(/\\%/g,'%').replace(/\\_/g,'_')
+      .replace(/\\#/g,'#').replace(/\\\{/g,'{').replace(/\\\}/g,'}')
+      .replace(/\\label\{[^}]+\}/g, '')
+      .replace(/\\textbf\{([\s\S]+?)\}/g,'<strong>$1</strong>')
+      .replace(/\\textit\{([\s\S]+?)\}/g,'<em>$1</em>')
+      .replace(/\\underline\{([\s\S]+?)\}/g,'<u>$1</u>')
+      .replace(/\\texttt\{([\s\S]+?)\}/g,'<code>$1</code>')
+      .replace(/\\textsc\{([^}]+)\}/g,'<span style="font-variant:small-caps">$1</span>')
+      .replace(/\\textcolor\{([^}]+)\}\{([\s\S]+?)\}/g,'<span style="color:$1">$2</span>')
+      .replace(/\\colorbox\{([^}]+)\}\{([\s\S]+?)\}/g,'<span style="background-color:$1">$2</span>')
+      .replace(/\\fcolorbox\{([^}]+)\}\{([^}]+)\}\{([\s\S]+?)\}/g,
+               '<span style="border:1px solid $1; background-color:$2">$3</span>')
+      .replace(/\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}/g,
+        (_,c)=>'<section class="abstract">'+c.trim().split(/\n{2,}/).map(p=>'<p>'+p.trim()+'</p>').join('')+'</section>')
+      .replace(/\\begin\{definition\}([\s\S]*?)\\end\{definition\}/g,
+        (_,c)=>`<div class="definition"><strong>Definition.</strong> ${c.trim()}</div>`)
+      .replace(/\\begin\{theorem\}(?:\[(.*?)\])?([\s\S]*?)\\end\{theorem\}/g,
+        (_,name,c)=>`<div class="theorem"><strong>${name?`Theorem (${name}).`:'Theorem.'}</strong> ${c.trim()}</div>`)
+      .replace(/\\section\*?\{([^}]+)\}/g,'<h1>$1</h1>')
+      .replace(/\\subsection\*?\{([^}]+)\}/g,'<h2>$1</h2>')
+      .replace(/\\subsubsection\*?\{([^}]+)\}/g,'<h3>$1</h3>')
+      .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g,
+        (_,t)=>'<ul>'+t.split(/\\item/).slice(1).map(i=>'<li>'+i.trim().replace(/\n/g,' ')+'</li>').join('')+'</ul>')
+      .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g,
+        (_,t)=>'<ol>'+t.split(/\\item/).slice(1).map(i=>'<li>'+i.trim().replace(/\n/g,' ')+'</li>').join('')+'</ol>')
+      .replace(/\\begin\{description\}([\s\S]*?)\\end\{description\}/g,
+        (_,t)=>{let dl='<dl>';t.replace(/\\item\[(.*?)\]([\s\S]*?)(?=\\item\[|$)/g,(_,k,d)=>dl+='<dt>'+k+'</dt><dd>'+d.trim()+'</dd>');return dl+'</dl>'})
+      .replace(/\\begin\{quote\}([\s\S]*?)\\end\{quote\}/g,
+        (_,c)=>'<blockquote>'+c.trim().split(/\n{2,}/).map(p=>'<p>'+p.trim()+'</p>').join('')+'</blockquote>')
+      .replace(/\\begin\{lstlisting\}(?:\[(.*?)\])?\s*([\s\S]*?)\\end\{lstlisting\}/g,
+        (_,o,c)=>{let lang='',cap='';if(o){const mL=o.match(/language=([^,\]]+)/);if(mL)lang=mL[1].toLowerCase();const mC=o.match(/caption=\{([\s\S]*?)\}/);if(mC)cap=mC[1];}const cls= lang?` class="language-${lang}"` : ''; return `<figure class="listing">${cap?`<figcaption>${cap}</figcaption>`:''}<pre><code${cls}>${escapeHTML(c.trim())}</code></pre></figure>`})
+      .replace(/\\begin\{proof\}([\s\S]*?)\\end\{proof\}/g,
+        (_,c)=>'<div class="proof"><strong>Proof.</strong> '+c.trim().replace(/\n/g,' ')+'</div>')
+      .replace(/\\begin\{verbatim\}([\s\S]*?)\\end\{verbatim\}/g,
+        (_,c)=>'<pre><code>'+escapeHTML(c)+'</code></pre>')
+      .replace(/\\begin\{thebibliography\}.*?\}([\s\S]*?)\\end\{thebibliography\}/g,
+        (_,t)=>{let h='<section class="bibliography"><h2>References</h2><ul>';t.replace(/\\bibitem(?:\[[^\]]*\])?\{[^}]*\}([\s\S]*?)(?=\\bibitem|$)/g,(_,e)=>h+='<li>'+e.trim().replace(/\n/g,' ')+'</li>');return h+'</ul></section>'})
+      .replace(/\\begin\{tabularx\}\{[^}]*\}\{[^}]+\}([\s\S]*?)\\end\{tabularx\}/g,
+        (_,tbl)=>{const rows=tbl.replace(/\\hline/g,'').split(/\\\\/).map(r=>r.trim()).filter(r=>r);let t='<table>';rows.forEach(r=>t+='<tr>'+r.split('&').map(c=>'<td>'+c.trim()+'</td>').join('')+'</tr>');return t+'</table>'})
+      .replace(/\\begin\{tabular\}\{[^}]+\}([\s\S]*?)\\end\{tabular\}/g,
+        (_,tbl)=>{const rows=tbl.replace(/\\hline/g,'').split(/\\\\/).map(r=>r.trim()).filter(r=>r);let t='<table>';rows.forEach(r=>t+='<tr>'+r.split('&').map(c=>'<td>'+c.trim()+'</td>').join('')+'</tr>');return t+'</table>'})
+      .replace(/\\\[\s*([\s\S]*?)\s*\\\]/g,'<div class="math display">\\[$1\\]</div>')
+      .replace(/\$([^$\n]+)\$/g,'<span class="math inline">\\($1\\)</span>');
+
     // --- Apply centering to marked sections AFTER all other processing ---
     body = body.replace(/__CENTER_START__([\s\S]*?)__CENTER_END__/g, (match, content) => {
       return `<div class="center">${content}</div>`;
@@ -609,6 +1284,7 @@ function App() {
   // Render button handler
   const handleRender = () => {
     setHtml(convertTexToHtml(latex, imageMap));
+    setRenderKey(k => k + 1); // Force MathJax re-typeset
   };
   // Open in new page handler
   const handleOpenNewPage = () => {
@@ -881,7 +1557,6 @@ hr { border: none; border-top: 2px solid #ccc; margin: 2em 0; }
   border-radius: 8px;
   display: block;
 }
-@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Comic+Neue:wght@700&family=Indie+Flower&family=Quicksand:wght@400;600&family=Baloo+2:wght@400;700&family=Nunito:wght@400;700&family=Inter:wght@400;700&display=swap');
 `;
     document.head.appendChild(style);
     return () => document.head.removeChild(style);
@@ -1050,6 +1725,7 @@ hr { border: none; border-top: 2px solid #ccc; margin: 2em 0; }
         <div id="preview-zone" style={{width: `${(1-dividerX)*100}%`, minWidth: '120px', transition: dragging.current ? 'none' : 'width 0.2s', height:'100%', overflow:'auto'}}>
           <div 
             id="preview" 
+            ref={previewRef}
             style={{
               fontFamily: docFont || '"Latin Modern Roman", "Computer Modern", STIX, Times, serif',
               color: textColor,
@@ -1062,10 +1738,16 @@ hr { border: none; border-top: 2px solid #ccc; margin: 2em 0; }
               borderRadius: 24,
               boxShadow: '0 4px 32px #0002',
               padding: '48px 56px',
-              lineHeight: 1.7
+              lineHeight: 1.7,
+              '--bgColor': bgColor,
+              '--docFont': docFont,
+              '--docFontSize': docFontSize + 'px',
+              '--textColor': textColor
             }}
-            dangerouslySetInnerHTML={{__html: html}} 
-          />
+          >
+            <style dangerouslySetInnerHTML={{ __html: SHARED_STYLES }} />
+            <div dangerouslySetInnerHTML={{ __html: html }} />
+          </div>
         </div>
       </div>
       {/* Debug panel for uploaded images */}
