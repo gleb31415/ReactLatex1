@@ -70,6 +70,11 @@ const loadMathJax = () => {
           console.log('MathJax is loaded and ready');
           window.MathJax.startup.defaultReady();
         }
+      },
+      options: {
+        processHtmlClass: 'preview-content',
+        processEscapes: true,
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
       }
     };
     const script = document.createElement('script');
@@ -214,26 +219,33 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // MathJax typeset after html update
+  // Auto-convert LaTeX to HTML whenever latex content changes
   useEffect(() => {
-    if (window.MathJax && html) {
-      window.MathJax.typesetPromise && window.MathJax.typesetPromise();
-    }
-  }, [html]);
+    const convertedHtml = convertTexToHtml(latex, imageMap);
+    setHtml(convertedHtml);
+    setRenderKey(k => k + 1); // Force MathJax re-typeset
+  }, [latex, imageMap]);
 
-  // Re-run MathJax typeset on render
+  // Re-run MathJax typeset whenever HTML changes or renderKey changes
   useEffect(() => {
-    if (window.MathJax && previewRef.current) {
+    if (window.MathJax && previewRef.current && html) {
+      // Clear any existing MathJax cache and re-process
+      if (window.MathJax.typesetClear) {
+        window.MathJax.typesetClear([previewRef.current]);
+      }
+      
       // MathJax v3
       if (window.MathJax.typesetPromise) {
-        window.MathJax.typesetPromise([previewRef.current]);
+        window.MathJax.typesetPromise([previewRef.current]).catch(err => {
+          console.warn('MathJax rendering error:', err);
+        });
       }
-      // MathJax v2
+      // MathJax v2 fallback
       else if (window.MathJax.Hub && window.MathJax.Hub.Queue) {
         window.MathJax.Hub.Queue(["Typeset", window.MathJax.Hub, previewRef.current]);
       }
     }
-  }, [renderKey]);
+  }, [html, renderKey]);
 
   // --- LaTeX to HTML conversion logic (adapted from your script) ---
   function extractBody(tex) {
@@ -1281,9 +1293,8 @@ function App() {
         ? p : '<p>' + p.replace(/\n/g, ' ') + '</p>').join('');
   }
 
-  // Render button handler
+  // Render button handler - now just forces a re-render
   const handleRender = () => {
-    setHtml(convertTexToHtml(latex, imageMap));
     setRenderKey(k => k + 1); // Force MathJax re-typeset
   };
   // Open in new page handler
@@ -1726,6 +1737,7 @@ hr { border: none; border-top: 2px solid #ccc; margin: 2em 0; }
           <div 
             id="preview" 
             ref={previewRef}
+            className="preview-content"
             style={{
               fontFamily: docFont || '"Latin Modern Roman", "Computer Modern", STIX, Times, serif',
               color: textColor,
